@@ -12,9 +12,9 @@ import Sofa.Simulation
 import csv
 import numpy as np
 import matplotlib.pyplot as plt
-from src.setup import load_tube_parameters, colored_tube_number, colored
+from .setup import load_tube_parameters, colored_tube_number, colored
 
-CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config')
+CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config')
 
 params = load_tube_parameters(CONFIG_PATH)
 Straight_length_1, Straight_length_2 = params["Straight_length"]
