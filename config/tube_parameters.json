@@ -1,0 +1,6 @@
+{
+    "Straight_length": [120, 180],
+    "Curved_length":   [40, 65],
+    "Tube_radius":     [0.9, 0.7],
+    "Radius_curvature":[100, 130]
+}

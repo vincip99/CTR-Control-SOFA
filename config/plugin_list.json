@@ -1,0 +1,30 @@
+{
+    "plugins": [
+        "Sofa.Component.AnimationLoop",
+        "Sofa.Component.SolidMechanics.Spring",
+        "MultiThreading",
+        "Sofa.Component.Topology.Mapping",
+        "Sofa.Component.Constraint.Lagrangian.Solver",
+        "Sofa.Component.Constraint.Lagrangian.Correction",
+        "Sofa.Component.Collision.Response.Contact",
+        "Sofa.Component.Collision.Geometry",
+        "Sofa.Component.Collision.Detection.Intersection",
+        "Sofa.Component.Collision.Detection.Algorithm",
+        "BeamAdapter",
+        "Sofa.Component.Constraint.Projective",
+        "Sofa.Component.LinearSolver.Direct",
+        "Sofa.Component.ODESolver.Backward",
+        "Sofa.Component.StateContainer",
+        "Sofa.Component.Topology.Container.Constant",
+        "Sofa.Component.Topology.Container.Grid",
+        "Sofa.Component.Visual",
+        "Sofa.Component.Mapping.Linear",
+        "Sofa.Component.Topology.Container.Dynamic",
+        "Sofa.GL.Component.Rendering3D",
+        "CGALPlugin",
+        "Sofa.Component.IO.Mesh",
+        "Sofa.Component.Engine.Select",
+        "Sofa.Component.Mass",
+        "Geomagic"
+    ]
+}
