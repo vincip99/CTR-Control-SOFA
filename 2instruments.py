@@ -21,9 +21,6 @@ CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config')
 Liver_young_modulus_rigid = "55"
 Liver_young_modulus_soft = "0.2" # default: 2e5
 
-# Tube's young modulus
-Tube1_young_modulus = 75000            # default: 1.75e6
-Tube2_young_modulus = 50000               # default: 1e9
 
 # Modify the parameter of tube stiffness (tube radius and young modulus of a chosen tube) to reach a value of contact force of 1.5 N          
 # defualt: 1e9
@@ -40,6 +37,7 @@ def createScene(rootNode):
     Curved_length_1,   Curved_length_2   = params["Curved_length"]
     Tube_radius_1,     Tube_radius_2     = params["Tube_radius"]
     Radius_curvature_1,Radius_curvature_2= params["Radius_curvature"]
+    Tube1_young_modulus,Tube2_young_modulus= params["Young_modulus"]
     Sofa.Helper.msg_info("createScene", f"\033[1;92mParameters loaded successfully\033[0;0m")
 
     # Set the scene
@@ -181,7 +179,7 @@ def createScene(rootNode):
             name="PIDPositionController",
             rootNode=rootNode, 
             irController=CTR.getObject('IRController'), 
-            target=[-2.0, 2.0, 45.5],
+            target=[-2.0, 4.0, 45.5],
             Kp=5.0,
             Ki=1.0,
             Kd=0.0

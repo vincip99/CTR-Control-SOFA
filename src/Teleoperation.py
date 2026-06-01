@@ -3,13 +3,10 @@ Docstring for v25.06.00.Techical project.InstrumentsController
 
 File defining controllers for the CTR simulation, including keyboard and haptic device controllers.
 """
-# import sys
 import os
 import Sofa
 import Sofa.Core
-# import Sofa.constants.Key as Key
 import Sofa.Simulation
-import csv
 import numpy as np
 import matplotlib.pyplot as plt
 from .setup import load_tube_parameters, colored_tube_number, colored

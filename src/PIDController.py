@@ -1,26 +1,27 @@
 """
 Docstring for v25.06.00.Techical project.InstrumentsController
 
-File defining controllers for the CTR simulation, including keyboard and haptic device controllers.
+File defining controllers for the CTR simulation
 """
-# import sys
 import os
 import Sofa
 import Sofa.Core
-# import Sofa.constants.Key as Key
 import Sofa.Simulation
 import numpy as np
 import matplotlib.pyplot as plt
-from .setup import load_tube_parameters, colored_tube_number, colored
+from .setup import load_tube_parameters
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config')
 
 params = load_tube_parameters(CONFIG_PATH)
+
+# --- Extract CTR parameters ---
 Straight_length_1, Straight_length_2 = params["Straight_length"]
 Curved_length_1,   Curved_length_2  = params["Curved_length"]
 Tube_radius_1,     Tube_radius_2     = params["Tube_radius"]
-Radius_curvature_1,Radius_curvature_2= params["Radius_curvature"]
-Sofa.Helper.msg_info("InstrmentsController", f"\033[1;92mParameters loaded successfully\033[0;0m")
+Radius_curvature_1,Radius_curvature_2 = params["Radius_curvature"]
+Tube1_young_modulus,Tube2_young_modulus = params["Young_modulus"]
+
 
 class PIDPositionController(Sofa.Core.Controller):
     def __init__(self, *args, **kwargs):
@@ -38,11 +39,11 @@ class PIDPositionController(Sofa.Core.Controller):
         self.Ki = kwargs.get('Ki', 0.1)
         self.Kd = kwargs.get('Kd', 0.01)
         
-        # Control variables
+        # Error variables
         self.prev_error = np.zeros(3)
         self.integral = np.zeros(3)
         
-        # Broyden Jacobian Matrix
+        # Jacobian Matrix
         self.J = None
 
         # Flag to activate/deactivate the controller
@@ -53,10 +54,6 @@ class PIDPositionController(Sofa.Core.Controller):
         self.lambda_max = kwargs.get('lambda_max', 0.1)
         # Threshold for manipulability measure to activate damping
         self.w_threshold = kwargs.get('w_threshold', 0.05)
-        
-        self.prev_x = None
-        self.prev_q = np.zeros(4)
-        self.prev_w = 0.0
         
         # --- Performance Plot Data Buffers ---
         self.history_time = []
@@ -75,13 +72,9 @@ class PIDPositionController(Sofa.Core.Controller):
         self.frame_counter = 0
 
     def onKeypressedEvent(self, c):
-        if str(c['key']).upper() == "B": 
+        if str(c['key']).upper() == "P": 
             self.active = not self.active
             if self.active:
-                tip_pose = self.rootNode.CTR.DOFs.position.value[-1]
-                self.prev_x = np.array(tip_pose[0:3])
-                self.prev_q = np.zeros(4)
-                self.prev_w = 0.0
                 self.prev_error = np.zeros(3)
                 self.integral = np.zeros(3)
                 self.J = None
@@ -114,16 +107,16 @@ class PIDPositionController(Sofa.Core.Controller):
         z_in, z_out, rot_in, rot_out = q
         
         # Base lengths (Inner tube is 2, Outer tube is 1)
-        L_s1 = 120.0; L_c1 = 40.0;  L_1 = L_s1 + L_c1
-        L_s2 = 180.0; L_c2 = 65.0;  L_2 = L_s2 + L_c2
+        L_s1 = Straight_length_1; L_c1 = Curved_length_1;  L_1 = L_s1 + L_c1
+        L_s2 = Straight_length_2; L_c2 = Curved_length_2;  L_2 = L_s2 + L_c2
         
         # Curvatures
-        k_c1 = 1.0 / 100.0
-        k_c2 = 1.0 / 130.0
+        k_c1 = 1.0 / Radius_curvature_1 if Radius_curvature_1 > 0 else 0.0
+        k_c2 = 1.0 / Radius_curvature_2 if Radius_curvature_2 > 0 else 0.0
         
         # Stiffness E*I approx (Solid rods)
-        EI_1 = 75000.0 * (0.9**4)
-        EI_2 = 50000.0 * (0.7**4)
+        EI_1 = Tube1_young_modulus * (Tube_radius_1**4)
+        EI_2 = Tube2_young_modulus * (Tube_radius_2**4)
         
         # Transition points in arc length s (base is at s=0)
         s_t1 = z_out + L_s1
@@ -244,16 +237,13 @@ class PIDPositionController(Sofa.Core.Controller):
         return grad_C
 
     def onAnimateBeginEvent(self, event):
-        if not self.active or self.prev_x is None:
+        if not self.active:
             return
 
         try:
-            # 1. Get current tip position with respect the global frame 
-            # (the tip is the most inner tube's tip)
-            tip_pose_world = self.rootNode.CTR.DOFs.position.value[-1]    #last DOF [x,y,z, qx,qy,qz,qw]
-            tip_position_world = np.array(tip_pose_world[0:3]) # extract position
-
-            tip_position = tip_position_world
+            # 1. Get current tip position
+            tip_pose = self.rootNode.CTR.DOFs.position.value[-1]
+            tip_position = np.array(tip_pose[0:3])
             
             dt = self.rootNode.dt.value
             
@@ -316,22 +306,26 @@ class PIDPositionController(Sofa.Core.Controller):
             u_primary = J_dls @ v_cartesian
             
             # Manipulability Redundancy Vector (Secondary Task)
-            # Telescopic Coordination (Gap Controller)
+            
+            # --- COMBINED SECONDARY TASK ---
+            # 1. Translation: Telescopic Coordination (Gap Controller)
             # We enforce a mathematical spring to keep the outer tube roughly 20mm behind the inner tube.
             gap = q_current[0] - q_current[1]  # z_inner - z_outer
-            
-            # If gap > 20, push outer tube forward and pull inner tube back in the null-space.
-            # Clip between -1.0 and 1.0 so it never destabilizes the system.
             push_val = np.clip((gap - 20.0) * 0.5, -1.0, 1.0)
             
-            # The vector is defined such that positive values push the joint FORWARD.
-            # Inner tube gets -push_val (pulled back), Outer tube gets +push_val (pushed forward)
-            grad_gap = np.array([-push_val, push_val, 0.0, 0.0])
+            # 2. Rotation: S-Divergence Snapping Avoidance
+            grad_C = self.compute_snapping_avoidance_gradient(q_current)
+            
+            # Combine: positive push_val for gap, NEGATIVE grad_C for minimizing snapping
+            grad_combined = np.array([
+                -push_val,     # z_inner (Gap)
+                 push_val,     # z_outer (Gap)
+                -grad_C[2],    # rot_inner (Snapping)
+                -grad_C[3]     # rot_outer (Snapping)
+            ])
             
             alpha_dexterity = 5.0
-            
-            # Move in direction of the gap correction vector
-            u_secondary = alpha_dexterity * grad_gap * dt
+            u_secondary = alpha_dexterity * grad_combined * dt
             
             u_null = (np.eye(4) - J_dls @ self.J) @ u_secondary
             
@@ -366,8 +360,6 @@ class PIDPositionController(Sofa.Core.Controller):
                 rotation[0] += step_rot_outer
 
             # 7. Save state for next step
-            self.prev_x = np.copy(tip_position)
-            self.prev_q = np.array([step_z_inner, step_z_outer, step_rot_inner, step_rot_outer])
             self.prev_error = np.copy(error)
 
             # 8. Debug Logging
@@ -434,7 +426,7 @@ class PIDPositionController(Sofa.Core.Controller):
         self.line_uz_out, = self.ax2.plot([], [], color='cyan', linewidth=1.5, label="Z Outer (mm)")
         self.line_rot_in, = self.ax2.plot([], [], color='darkorange', linewidth=1.5, label="Rot Inner (deg)")
         self.line_rot_out, = self.ax2.plot([], [], color='purple', linewidth=1.5, label="Rot Outer (deg)")
-        self.ax2.set_ylabel("Control Actions", fontsize=10)
+        self.ax2.set_ylabel("Absolute Joint Positions", fontsize=10)
         self.ax2.set_xlabel("Simulation Timeline (seconds)", fontsize=11)
         self.ax2.grid(True, linestyle=':', alpha=0.6)
         self.ax2.legend(loc="lower right", ncol=2)
@@ -468,7 +460,13 @@ class PIDPositionController(Sofa.Core.Controller):
         self.fig.canvas.flush_events()
 
     def finalize_plot(self):
-        """Converts the plot back to blocking mode when the run finishes."""
+        """Saves the final plot instead of blocking the SOFA thread."""
         if self.fig is not None and plt.fignum_exists(self.fig.number):
-            plt.ioff()
-            plt.show()
+            try:
+                images_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'images')
+                os.makedirs(images_dir, exist_ok=True)
+                save_path = os.path.join(images_dir, 'PID_Final_Plot.png')
+                self.fig.savefig(save_path)
+                print(f"\033[92m[PID] Final plot saved in {save_path}\033[0m")
+            except Exception as e:
+                print(f"\033[91m[PID] Failed to save plot: {e}\033[0m")
