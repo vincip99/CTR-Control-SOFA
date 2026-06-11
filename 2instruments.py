@@ -228,7 +228,7 @@ def createScene(rootNode):
             name="MPCPositionController",
             rootNode=rootNode,
             irController=CTR.getObject('IRController'),
-            target=[4.49, 2.0, 46.5],
+            target=[-2.0, 4.0, 45.5],
             stop_at_z=25.0,
             N=5
         ))
