@@ -272,13 +272,9 @@ class MPCPositionController(Sofa.Core.Controller):
             max_z_step = 10.0 * dt
             max_rot_step = np.radians(60.0) * dt
             
-            # Dynamic bounds based on physical limits
-            outer_z = self.ir_controller.xtip.value[0]
-            max_z_outer = max_z_step if outer_z < self.stop_at_z else 0.0
-            
             # Bounds for inputs [u_z_inner, u_z_outer, u_rot_in, u_rot_out] over horizon N
             bnds = [(-max_z_step, max_z_step), 
-                    (-max_z_step, max_z_outer), 
+                    (-max_z_step, max_z_step), 
                     (-max_rot_step, max_rot_step), 
                     (-max_rot_step, max_rot_step)] * self.N
             
@@ -303,18 +299,18 @@ class MPCPositionController(Sofa.Core.Controller):
                 if self.frame_counter % 10 == 0:
                     print("\033[91m[MPC Error] Optimizer returned NaN. Sending zero control.\033[0m")
             
-            step_z_inner = float(u_optimal[0])
-            step_z_outer = float(u_optimal[1])
-            step_rot_inner = float(u_optimal[2])
-            step_rot_outer = float(u_optimal[3])
+            step_z_inner = np.clip(float(u_optimal[0]), -max_z_step, max_z_step)
+            step_z_outer = np.clip(float(u_optimal[1]), -max_z_step, max_z_step)
+            step_rot_inner = np.clip(float(u_optimal[2]), -max_rot_step, max_rot_step)
+            step_rot_outer = np.clip(float(u_optimal[3]), -max_rot_step, max_rot_step)
             
             # 5. Apply Commands Safely
             curr_outer = self.ir_controller.xtip.value[0]
             curr_inner = self.ir_controller.xtip.value[1]
             
             # Apply absolute steps directly as expected by the new Jacobian
-            new_inner = np.clip(curr_inner + step_z_inner, 0.0, 50.0) 
-            new_outer = np.clip(curr_outer + step_z_outer, 0.0, 45.0)
+            new_inner = curr_inner + step_z_inner
+            new_outer = curr_outer + step_z_outer
             
             with self.ir_controller.xtip.writeable() as xtip:
                 xtip[1] = float(new_inner)
@@ -339,10 +335,10 @@ class MPCPositionController(Sofa.Core.Controller):
             self.history_x.append(x_current[0])
             self.history_y.append(x_current[1])
             self.history_z.append(x_current[2])
-            self.history_q_z_inner.append(new_inner)
-            self.history_q_z_outer.append(new_outer)
-            self.history_q_rot_inner.append(np.degrees(curr_rot_inner + step_rot_inner)) 
-            self.history_q_rot_outer.append(np.degrees(curr_rot_outer + step_rot_outer))
+            self.history_q_z_inner.append(step_z_inner)
+            self.history_q_z_outer.append(step_z_outer)
+            self.history_q_rot_inner.append(np.degrees(step_rot_inner)) 
+            self.history_q_rot_outer.append(np.degrees(step_rot_outer))
             
             if self.frame_counter % self.plot_update_frequency == 0:
                 self.update_live_plot()
