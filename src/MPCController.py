@@ -5,6 +5,7 @@ import Sofa.Helper
 import matplotlib.pyplot as plt
 import os
 from .setup import load_tube_parameters
+from .telemetry import LivePlotterMixin
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config')
 
@@ -17,7 +18,8 @@ Tube_radius_1,     Tube_radius_2     = params["Tube_radius"]
 Radius_curvature_1,Radius_curvature_2 = params["Radius_curvature"]
 Tube1_young_modulus,Tube2_young_modulus = params["Young_modulus"]
 
-class MPCPositionController(Sofa.Core.Controller):
+
+class MPCPositionController(Sofa.Core.Controller, LivePlotterMixin):
     def __init__(self, *args, **kwargs):
         Sofa.Core.Controller.__init__(self, *args, **kwargs)
         self.name = "MPCPositionController"
@@ -26,10 +28,12 @@ class MPCPositionController(Sofa.Core.Controller):
         
         # --- Target Input Vector r = [X, Y, Z]^T ---
         self.target = np.array(kwargs.get('target', [4.49, 4.0, 46.5]))
-        self.stop_at_z = kwargs.get('stop_at_z', 25.0)
         
         # --- MPC Hyperparameters ---
         self.N = kwargs.get('N', 5)  # Prediction Horizon
+        
+        # --- Shared / Dual-Mode Controller Flag ---
+        self.use_shared_controller = kwargs.get('use_shared_controller', True)
         
         # State cost (Q) - Penality for distance to target
         self.Q = np.diag([50.0, 50.0, 50.0])
@@ -37,9 +41,11 @@ class MPCPositionController(Sofa.Core.Controller):
         # Control cost (R) - Penalty for control effort to ensure smoothness
         # u = [step_z_inner, step_z_outer, step_rot_in, step_rot_out]
         # Balance the outer and inner tube penalties so both are used!
-        self.R = np.diag([1.0, 1.0, 10.0, 10.0])
+        self.R = np.diag([10.0, 10.0, 10.0, 10.0])
         
-
+        # Slew rate cost (S) - Penalty for change in control effort (acceleration) to prevent limit cycles
+        self.S = np.diag([100.0, 100.0, 100.0, 100.0])
+        
         self.J = None
         
         # State tracking
@@ -56,12 +62,20 @@ class MPCPositionController(Sofa.Core.Controller):
         self.history_q_z_outer = []
         self.history_q_rot_inner = []
         self.history_q_rot_outer = []
+        self.history_force = []
+        self.history_x_outer = []
+        self.history_y_outer = []
+        self.history_z_outer = []
         
         # --- Real-Time Plotting Variables ---
         self.fig = None
         self.plot_update_frequency = 15
         self.sim_time_accumulator = 0.0
         self.frame_counter = 0
+        self.target_reached = False
+        
+        self.log_prefix = "MPC"
+        self.plot_title = "Model Predictive Control (MPC) LIVE Dashboard"
 
     def ctr_forward_kinematics(self, q):
         """
@@ -144,8 +158,14 @@ class MPCPositionController(Sofa.Core.Controller):
         return T[0:3, 3]
         
     def compute_numerical_jacobian(self, q, delta_q=1e-4):
-        num_joints = 4
-        num_task_dims = 3
+        """
+        Compute the Jacobian matrix using finite differences.
+        J = \Delta x/ \Delta q = [(x(q + \Delta q_i/2)^T - x(q - \Delta q_i/2))^T/(\Delta q_i)]
+        """
+        # Using the jacobian approximation formula from paper: 
+        # Mohsen Khadem, 2019, Autonomous Steering of Concentric Tube Robots for Enhanced Force/Velocity Manipulability
+        num_joints = 4  # number of degrees of freedom
+        num_task_dims = 3   # task space dimension
         J = np.zeros((num_task_dims, num_joints))
         
         for i in range(num_joints):
@@ -178,6 +198,10 @@ class MPCPositionController(Sofa.Core.Controller):
                 self.history_q_z_outer = []
                 self.history_q_rot_inner = []
                 self.history_q_rot_outer = []
+                self.history_force = []
+                self.history_x_outer = []
+                self.history_y_outer = []
+                self.history_z_outer = []
                 
                 self.frame_counter = 0
                 self.sim_time_accumulator = 0.0
@@ -188,12 +212,15 @@ class MPCPositionController(Sofa.Core.Controller):
                 print("\033[91m[MPC] Controller STOPPED\033[0m")
                 self.finalize_plot()
 
+
     def mpc_cost(self, U_flat, x_current, q_current):
         """ Cost function for the MPC optimizer """
         U = U_flat.reshape((self.N, 4))
         x_pred = np.copy(x_current)
         q_pred = np.copy(q_current)
         cost = 0.0
+        
+        u_prev = self.prev_u  # Track previous command for slew rate
         
         for k in range(self.N):
             u_k = U[k]
@@ -209,8 +236,13 @@ class MPCPositionController(Sofa.Core.Controller):
             gap_error = gap - 20.0
             W_gap = 10.0
             
+            # Slew rate (acceleration) penalty
+            delta_u = u_k - u_prev
+            
             # Quadratic cost
-            cost += e.T @ self.Q @ e + u_k.T @ self.R @ u_k + W_gap * (gap_error**2)
+            cost += e.T @ self.Q @ e + u_k.T @ self.R @ u_k + delta_u.T @ self.S @ delta_u + W_gap * (gap_error**2)
+            
+            u_prev = u_k
             
         return cost
 
@@ -264,35 +296,50 @@ class MPCPositionController(Sofa.Core.Controller):
             except Exception as e:
                 pass
                 
-            # 3. Setup MPC Optimization Problem
-            # Initial guess for optimization (zeros)
-            U0 = np.zeros(self.N * 4)
+            # 3. Compute Control Action (MPC or Local Controller)
+            err_norm_current = np.linalg.norm(self.target - x_current)
             
             # Actuator physical limits (e.g. 10 mm/s)
             max_z_step = 10.0 * dt
             max_rot_step = np.radians(60.0) * dt
             
-            # Bounds for inputs [u_z_inner, u_z_outer, u_rot_in, u_rot_out] over horizon N
-            bnds = [(-max_z_step, max_z_step), 
-                    (-max_z_step, max_z_step), 
-                    (-max_rot_step, max_rot_step), 
-                    (-max_rot_step, max_rot_step)] * self.N
-            
-            # Constraints
-            cons = {'type': 'ineq', 'fun': self.force_constraint, 'args': (force_value,)}
-            
-            # Optimize
-            res = opt.minimize(self.mpc_cost, U0, args=(x_current, q_current), bounds=bnds, constraints=cons, method='SLSQP', options={'maxiter': 20, 'ftol': 1e-3})
-            
-            if not res.success and self.frame_counter % 10 == 0:
-                print(f"\033[93m[MPC Warning] Optimizer did not converge perfectly: {res.message}\033[0m")
-            
-            if force_value > 0.4 and self.frame_counter % 10 == 0:
-                print(f"\033[91m[MPC Warning] Force = {force_value:.2f} N! Optimizer actively limiting insertion.\033[0m")
-            
-            # 4. Extract optimal first control action
-            U_opt = res.x.reshape((self.N, 4))
-            u_optimal = U_opt[0]
+            # Switch to local controller ONLY after reaching < 0.1mm error (if shared controller is activated)
+            if self.use_shared_controller and (err_norm_current < 0.1 or self.target_reached):
+                # --- LOCAL PROPORTIONAL CONTROLLER ---
+                J_dls = self.J.T @ np.linalg.inv(self.J @ self.J.T + 1e-4 * np.eye(3))
+                error = self.target - x_current
+                v_cartesian = 2.0 * error * dt  # Kp = 2.0
+                u_optimal = J_dls @ v_cartesian
+                
+                # Tiny deadband to completely stop chattering
+                if err_norm_current < 0.05:
+                    u_optimal = np.zeros(4)
+            else:
+                # --- MPC OPTIMIZER ---
+                # Initial guess for optimization (zeros)
+                U0 = np.zeros(self.N * 4)
+                
+                # Bounds for inputs [u_z_inner, u_z_outer, u_rot_in, u_rot_out] over horizon N
+                bnds = [(-max_z_step, max_z_step), 
+                        (-max_z_step, max_z_step), 
+                        (-max_rot_step, max_rot_step), 
+                        (-max_rot_step, max_rot_step)] * self.N
+                
+                # Constraints
+                cons = {'type': 'ineq', 'fun': self.force_constraint, 'args': (force_value,)}
+                
+                # Optimize
+                res = opt.minimize(self.mpc_cost, U0, args=(x_current, q_current), bounds=bnds, constraints=cons, method='SLSQP', options={'maxiter': 100, 'ftol': 1e-3})
+                
+                if not res.success and self.frame_counter % 10 == 0:
+                    print(f"\033[93m[MPC Warning] Optimizer did not converge perfectly: {res.message}\033[0m")
+                
+                if force_value > 0.4 and self.frame_counter % 10 == 0:
+                    print(f"\033[91m[MPC Warning] Force = {force_value:.2f} N! Optimizer actively limiting insertion.\033[0m")
+                
+                # Extract optimal first control action
+                U_opt = res.x.reshape((self.N, 4))
+                u_optimal = U_opt[0]
             
             if np.any(np.isnan(u_optimal)):
                 u_optimal = np.zeros(4)
@@ -339,6 +386,18 @@ class MPCPositionController(Sofa.Core.Controller):
             self.history_q_z_outer.append(step_z_outer)
             self.history_q_rot_inner.append(np.degrees(step_rot_inner)) 
             self.history_q_rot_outer.append(np.degrees(step_rot_outer))
+            self.history_force.append(force_value)
+            
+            # Use true outer tube tip from SOFA Visuals
+            try:
+                quads_out = self.rootNode.CTR.visu_1.Quads.position.value
+                outer_tip = np.mean(np.array(quads_out)[-10:], axis=0)
+            except:
+                outer_tip = tip_position # Fallback
+            
+            self.history_x_outer.append(outer_tip[0])
+            self.history_y_outer.append(outer_tip[1])
+            self.history_z_outer.append(outer_tip[2])
             
             if self.frame_counter % self.plot_update_frequency == 0:
                 self.update_live_plot()
@@ -348,88 +407,16 @@ class MPCPositionController(Sofa.Core.Controller):
             # Convergence check
             actuator_velocity_norm = np.linalg.norm(u_optimal)
             if err_norm < 0.2 and actuator_velocity_norm < 0.005:
-                print("\n" + "="*70)
-                Sofa.Helper.msg_info(self, "\033[1;92m[SUCCESS] MPC Target Reached!\033[0m")
-                print("="*70 + "\n")
-                self.active = False
-                self.update_live_plot()
-                self.finalize_plot()
+                if not self.target_reached:
+                    print("\n" + "="*70)
+                    Sofa.Helper.msg_info(self, "\033[1;92m[SUCCESS] MPC Target Reached!\033[0m")
+                    print("="*70 + "\n")
+                    self.target_reached = True
+                
+                # self.active is intentionally NOT set to False,
+                # so the controller keeps regulating and logging data indefinitely!
                 
         except Exception as e:
             print(f"[MPC Runtime Error] {e}")
             self.active = False
 
-    # =========================================================================
-    # REAL-TIME PLOTTING METHODS
-    # =========================================================================
-
-    def setup_live_plot(self):
-        """Initializes the matplotlib interactive mode and layout."""
-        plt.ion()  # Turn on interactive mode
-        self.fig, (self.ax1, self.ax2) = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
-        self.fig.suptitle("Model Predictive Control (MPC) LIVE Dashboard", fontsize=14, fontweight='bold')
-        
-        # Initialize empty lines for Subplot 1 (X, Y, Z Positions)
-        self.line_x, = self.ax1.plot([], [], color='red', linewidth=2.0, label="Tip X")
-        self.line_y, = self.ax1.plot([], [], color='green', linewidth=2.0, label="Tip Y")
-        self.line_z, = self.ax1.plot([], [], color='blue', linewidth=2.0, label="Tip Z")
-        
-        # Target lines
-        self.ax1.axhline(y=self.target[0], color='red', linestyle='--', alpha=0.5, label="Target X")
-        self.ax1.axhline(y=self.target[1], color='green', linestyle='--', alpha=0.5, label="Target Y")
-        self.ax1.axhline(y=self.target[2], color='blue', linestyle='--', alpha=0.5, label="Target Z")
-        
-        self.ax1.set_ylabel("Position (mm)", fontsize=10)
-        self.ax1.grid(True, linestyle=':', alpha=0.6)
-        # Place legend neatly inside
-        self.ax1.legend(loc="upper right", bbox_to_anchor=(1.15, 1))
-        
-        # Initialize empty lines for Subplot 2
-        self.line_uz_in, = self.ax2.plot([], [], color='teal', linewidth=1.5, label="Z Inner (mm)")
-        self.line_uz_out, = self.ax2.plot([], [], color='cyan', linewidth=1.5, label="Z Outer (mm)")
-        self.line_rot_in, = self.ax2.plot([], [], color='darkorange', linewidth=1.5, label="Rot Inner (deg)")
-        self.line_rot_out, = self.ax2.plot([], [], color='purple', linewidth=1.5, label="Rot Outer (deg)")
-        self.ax2.set_ylabel("Absolute Joint Positions", fontsize=10)
-        self.ax2.set_xlabel("Simulation Timeline (seconds)", fontsize=11)
-        self.ax2.grid(True, linestyle=':', alpha=0.6)
-        self.ax2.legend(loc="lower right", ncol=2)
-
-        plt.tight_layout()
-        self.fig.show()
-        self.fig.canvas.flush_events()
-
-    def update_live_plot(self):
-        """Injects new data into the existing plot lines without blocking SOFA."""
-        if self.fig is None or not plt.fignum_exists(self.fig.number):
-            return
-
-        # Update data dynamically
-        self.line_x.set_data(self.history_time, self.history_x)
-        self.line_y.set_data(self.history_time, self.history_y)
-        self.line_z.set_data(self.history_time, self.history_z)
-        
-        self.line_uz_in.set_data(self.history_time, self.history_q_z_inner)
-        self.line_uz_out.set_data(self.history_time, self.history_q_z_outer)
-        self.line_rot_in.set_data(self.history_time, self.history_q_rot_inner)
-        self.line_rot_out.set_data(self.history_time, self.history_q_rot_outer)
-
-        # Rescale axes continuously to fit the new data
-        for ax in [self.ax1, self.ax2]:
-            ax.relim()
-            ax.autoscale_view()
-
-        # Flush the GUI event queue to render the frame
-        self.fig.canvas.draw()
-        self.fig.canvas.flush_events()
-
-    def finalize_plot(self):
-        """Saves the final plot instead of blocking the SOFA thread."""
-        if self.fig is not None and plt.fignum_exists(self.fig.number):
-            try:
-                images_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'images')
-                os.makedirs(images_dir, exist_ok=True)
-                save_path = os.path.join(images_dir, 'MPC_Final_Plot.png')
-                self.fig.savefig(save_path)
-                print(f"\033[92m[MPC] Final plot saved in {save_path}\033[0m")
-            except Exception as e:
-                print(f"\033[91m[MPC] Failed to save plot: {e}\033[0m")

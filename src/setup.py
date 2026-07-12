@@ -6,7 +6,7 @@ import os
 import json
 
 def load_tube_parameters(path):
-    """Carica i parametri dei tubi da tube_parameters.json."""
+    """Load tube parameters from tube_parameters.json."""
     json_file = os.path.join(path, "tube_parameters.json")
     try:
         with open(json_file, "r") as f: 
@@ -16,7 +16,7 @@ def load_tube_parameters(path):
         exit()
     
 def load_plugin_list(path):
-    """Carica lista di plugins da plugin_list.json"""
+    """Load plugin list from plugin_list.json"""
     json_file = os.path.join(path, "plugin_list.json")
     try:
         with open(json_file, "r") as f:
@@ -39,11 +39,11 @@ ANSI_COLORS = {
 }
 
 def colored(text, color):
-    """Ritorna una stringa colorata con ANSI escape codes."""
+    """Returns a colored string with ANSI escape codes."""
     return f"{ANSI_COLORS.get(color,'white')}{text}{ANSI_COLORS['reset']}"
 
 def colored_tube_number(tube):
-    """Restituisce il numero del tubo con il suo colore ANSI."""
+    """Returns the tube number with its ANSI color."""
     mapping = {1: "red", 2: "green", 3: "blue"}
     return colored(str(tube), mapping.get(tube, "white"))
 

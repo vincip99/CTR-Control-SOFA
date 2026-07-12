@@ -6,11 +6,11 @@ File defining a SOFA scene with a 2-instrument CTR, including haptic and keyboar
 # import sys
 import os
 import Sofa
-from src.Teleoperation import KeyBoardController
+from src.teleoperation import KeyBoardController
 from src.PIDController import PIDPositionController
 from src.AdaptiveController import MRACPositionController, MCSAdaptiveController
 from src.MPCController import MPCPositionController
-from src.Liver import create_liver
+from src.liver import create_liver
 from src.setup import load_plugin_list, load_tube_parameters
 import numpy as np
 
@@ -48,18 +48,9 @@ def createScene(rootNode):
     rootNode.gravity = [0, 0, 0]
     rootNode.dt = 0.01
 
-    # --- SCELTA INTERATTIVA DEL LIVER --- Se voglio fare il workspace non voglio che il liver sia di intralcio
-    try:
-        user_input = input("Vuoi creare il Liver? [y/n] : ").strip().lower()
-        LOAD_LIVER = (user_input == 'y')
-    except:
-        LOAD_LIVER = True  # fallback se input non è disponibile
-    if LOAD_LIVER:
-        create_liver(rootNode=rootNode, ym=Liver_young_modulus_soft, 
-                    path=MESH_PATH) #, fixingBox=[20, 0, 90, 30, 15, 120])
-    else:
-        Sofa.Helper.msg_info("createScene", "\033[1;91mLiver NON creato\033[0;0m")
-    
+    # --- LIVER CREATION ---
+    create_liver(rootNode=rootNode, ym=Liver_young_modulus_soft, 
+                    path=MESH_PATH)
 
     # Collision pipeline
     solver = rootNode.addObject('GenericConstraintSolver', name='solver', computeConstraintForces="1", 
@@ -168,10 +159,10 @@ def createScene(rootNode):
     ))
 
     Sofa.Helper.msg_info("createScene", """\033[93mKeyboard Controller \033[1;92mAttivo\033[0;93m
-    Comandi:
-    \033[1;94mCtrl + 1/2\033[0;93m per selezionare quale tubo controllare; 
-    \033[1;94mCtrl + K/J\033[0;93m per traslare in avanti o indietro il tubo selezionato;
-    \033[1;94mCtrl + M/N\033[0;93m per ruotare in verso orario o antiorario il tubo selezionato;\033[0m""")
+    Commands:
+    \033[1;94mCtrl + 1/2\033[0;93m to select which tube to control; 
+    \033[1;94mCtrl + W/S\033[0;93m to move the selected tube forward or backward;
+    \033[1;94mCtrl + A/D\033[0;93m to rotate the selected tube clockwise or counterclockwise;\033[0m""")
 
     # PID CONTROLLER (IK + Null-Space)
     try:
@@ -180,47 +171,14 @@ def createScene(rootNode):
             rootNode=rootNode, 
             irController=CTR.getObject('IRController'), 
             target=[-2.0, 4.0, 45.5],
-            Kp=5.0,
+            Kp=10.0,
             Ki=1.0,
             Kd=0.0
         ))
         Sofa.Helper.msg_info("createScene", "\033[1;92mPID IK Controller initialized successfully\033[0;0m")
     except Exception as e:
         Sofa.Helper.msg_info("createScene", f"\033[1;91mPID Controller failed to initialize: {e}\033[0;0m")
-    # MRAC POSITION CONTROLLER
-    try:
-        rootNode.addObject(MRACPositionController(
-            name="MRACController",
-            rootNode=rootNode, 
-            irController=CTR.getObject('IRController'), 
-            target=[4.49, 2.0, 46.5], #[1.49, -8.0, 46.5],
-            stop_at_z=15.0,
-            Am=0.5,              # Reference model tracking speed
-            Bm=0.5,              # Reference model input gain
-            gamma_trans=0.02,    # Adaptation rate for translation (Z)
-            gamma_rot=0.01      # Adaptation rate for rotation (X,Y)
-        ))
-        Sofa.Helper.msg_info("createScene", "\033[1;92mMRAC Controller initialized successfully\033[0;0m")
-    except Exception as e:
-        Sofa.Helper.msg_info("createScene", f"\033[1;91mMRAC Controller failed to initialize: {e}\033[0;0m")
 
-        # MIMO MCS ADAPTIVE CONTROLLER
-    try:
-        rootNode.addObject(MCSAdaptiveController(
-            name="MCSController",
-            rootNode=rootNode,
-            irController=CTR.getObject('IRController'),
-            target=[4.49, 2.0, 46.5],
-            stop_at_z=25.0,
-            alpha=0.005,         # Integral adaptation gain
-            beta=0.001,          # Proportional adaptation gain
-            sigma=0.05,          # Anti-windup leakage factor
-            Am=-0.1,             # Slower Reference Model
-            Bm=0.1
-        ))
-        Sofa.Helper.msg_info("createScene", "\033[1;92mMIMO-MCS Controller initialized successfully\033[0;0m")
-    except Exception as e:
-        Sofa.Helper.msg_info("createScene", f"\033[1;91mMIMO-MCS Controller failed to initialize: {e}\033[0;0m")
  
     # MPC CONTROLLER
     try:
@@ -229,8 +187,8 @@ def createScene(rootNode):
             rootNode=rootNode,
             irController=CTR.getObject('IRController'),
             target=[-2.0, 4.0, 45.5],
-            stop_at_z=25.0,
-            N=5
+            use_shared_controller=False,
+            N=10
         ))
         Sofa.Helper.msg_info("createScene", "\033[1;92mMPC Controller initialized successfully (Press P to start)\033[0;0m")
     except Exception as e:
@@ -251,7 +209,6 @@ def main():
     Sofa.Gui.GUIManager.SetDimension(1080, 1080)
     Sofa.Gui.GUIManager.MainLoop(root)
     Sofa.Gui.GUIManager.closeGUI()
-
 
 # Function used only if this script is called from a python environment
 if __name__ == '__main__':

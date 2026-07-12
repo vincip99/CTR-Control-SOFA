@@ -11,9 +11,11 @@ import os
 def create_liver(rootNode=None, ym = 55e6, path=None,
                  pos = [0, -10, 10], rot = [45, 45, 0], scale = 10, 
                  fixingBox = [10, 0, 30, 20, 15, 40], mass = 100.0, color = [0.7, 0.3, 0.1]):
+
     liver = rootNode.addChild('liver')
     liver.addObject('EulerImplicitSolver', rayleighStiffness="0.1", rayleighMass="0.1")	
     liver.addObject('SparseLDLSolver')
+    
     liver.addObject('MeshOBJLoader', name="liverLoader", filename=os.path.join(path, 'liver.obj'), 
                     translation=pos, rotation=rot, scale=scale)	
     liver.addObject('MeshGenerationFromPolyhedron', name="tetraGenerator", inputPoints="@liverLoader.position", 
@@ -30,18 +32,22 @@ def create_liver(rootNode=None, ym = 55e6, path=None,
     liverVisu.addObject('OglModel', name="Visual", src="@../liverLoader", color=color)
     liverVisu.addObject('BarycentricMapping', input="@..", output="@Visual")
 
-    liverCollis = liver.addChild('Collision')										    
+    liverCollis = liver.addChild('Collision')								    
     liverCollis.addObject('MeshTopology', src="@../liverLoader")
-    liverCollis.addObject('MechanicalObject')
+    # Independent collision models
+    liverCollis.addObject('MechanicalObject')	
     liverCollis.addObject('TriangleCollisionModel')
     liverCollis.addObject('LineCollisionModel')
     liverCollis.addObject('PointCollisionModel')
+    # Bridge Collision and FEM Mesh
     liverCollis.addObject('BarycentricMapping', input="@..", output="@.")
 
-    constraintNode = liver.addChild('Constraints')								
+    constraintNode = liver.addChild('Constraints')
+    # Select vertices inside the bounding box						
     constraintNode.addObject('BoxROI', name="fixedBox", box=fixingBox, drawBoxes="1", position="@../dofs.rest_position")
+    # Lock the selected vertices
     constraintNode.addObject('FixedProjectiveConstraint', indices="@fixedBox.indices")
-    # Aggiunta di ulteriori box di vincolo per mantenere il fegato in posizione
+    # Additional fixed boxes to keep the liver in position
     constraintNode.addObject('BoxROI', name="fixedBox2", box=[-30, 0, 30, -20, 15, 40], drawBoxes="1", position="@../dofs.rest_position")
     constraintNode.addObject('FixedProjectiveConstraint', indices="@fixedBox2.indices")
     constraintNode.addObject('BoxROI', name="fixedBox3", box=[0, -30, 40, -15, -15, 60], drawBoxes="1", position="@../dofs.rest_position")
@@ -51,9 +57,11 @@ def create_liver(rootNode=None, ym = 55e6, path=None,
                         filename=os.path.join(path, 'liver.vtu'), 
                         listening=True,
                         exportAtBegin=True,
-                        edges="0", triangles="0", quads="0",
-                        tetras="0", # Niente tetraedri
-                        hexas="1",  # Solo esaedri
+                        edges="0", 
+                        triangles="0", 
+                        quads="0",
+                        tetras="1", 
+                        hexas="0", 
                         printLog="1")
     
-    Sofa.Helper.msg_info("createScene", "\033[1;92mLiver creato correttamente\033[0;0m")
+    Sofa.Helper.msg_info("createScene", "\033[1;92mLiver Correctly Generated\033[0;0m")

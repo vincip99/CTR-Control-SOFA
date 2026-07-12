@@ -10,12 +10,13 @@ import Sofa.Simulation
 import numpy as np
 import matplotlib.pyplot as plt
 from .setup import load_tube_parameters
+from .telemetry import LivePlotterMixin
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config')
 
 params = load_tube_parameters(CONFIG_PATH)
 
-# --- Extract CTR parameters ---
+# Extract CTR parameters
 Straight_length_1, Straight_length_2 = params["Straight_length"]
 Curved_length_1,   Curved_length_2  = params["Curved_length"]
 Tube_radius_1,     Tube_radius_2     = params["Tube_radius"]
@@ -23,7 +24,10 @@ Radius_curvature_1,Radius_curvature_2 = params["Radius_curvature"]
 Tube1_young_modulus,Tube2_young_modulus = params["Young_modulus"]
 
 
-class PIDPositionController(Sofa.Core.Controller):
+class PIDPositionController(Sofa.Core.Controller, LivePlotterMixin):
+    """
+    Controller class for Jacobian Based Position control.
+    """
     def __init__(self, *args, **kwargs):
         # These are needed (and the normal way to override from a python class)
         Sofa.Core.Controller.__init__(self, *args, **kwargs)
@@ -34,6 +38,7 @@ class PIDPositionController(Sofa.Core.Controller):
         
         # Target Cartesian position [X, Y, Z]
         self.target = np.array(kwargs.get('target', [0.0, 0.0, 45.0]))
+
         # PID Gains
         self.Kp = kwargs.get('Kp', 1.0)
         self.Ki = kwargs.get('Ki', 0.1)
@@ -55,7 +60,7 @@ class PIDPositionController(Sofa.Core.Controller):
         # Threshold for manipulability measure to activate damping
         self.w_threshold = kwargs.get('w_threshold', 0.05)
         
-        # --- Performance Plot Data Buffers ---
+        # Plot Data Buffers
         self.history_time = []
         self.history_x = []
         self.history_y = []
@@ -64,12 +69,20 @@ class PIDPositionController(Sofa.Core.Controller):
         self.history_q_z_outer = []
         self.history_q_rot_inner = []
         self.history_q_rot_outer = []
+        self.history_force = []
+        self.history_x_outer = []
+        self.history_y_outer = []
+        self.history_z_outer = []
         
-        # --- Real-Time Plotting Variables ---
+        # Real-Time Plotting Variables
         self.fig = None
         self.plot_update_frequency = 15
         self.sim_time_accumulator = 0.0
         self.frame_counter = 0
+        self.target_reached = False
+        
+        self.log_prefix = "PID"
+        self.plot_title = "PID Controller LIVE Dashboard"
 
     def onKeypressedEvent(self, c):
         if str(c['key']).upper() == "P": 
@@ -87,6 +100,10 @@ class PIDPositionController(Sofa.Core.Controller):
                 self.history_q_z_outer = []
                 self.history_q_rot_inner = []
                 self.history_q_rot_outer = []
+                self.history_force = []
+                self.history_x_outer = []
+                self.history_y_outer = []
+                self.history_z_outer = []
                 self.sim_time_accumulator = 0.0
                 self.frame_counter = 0
                 
@@ -102,7 +119,10 @@ class PIDPositionController(Sofa.Core.Controller):
     def ctr_forward_kinematics(self, q):
         """
         Fast analytical model of a 2-tube CTR based on constant-curvature kinematics.
-        q = [z_in, z_out, rot_in, rot_out]
+        Inputs:
+         - q = [z_in, z_out, rot_in, rot_out]
+        Outputs:
+         - T = [x, y, z] position of the tip
         """
         z_in, z_out, rot_in, rot_out = q
         
@@ -178,10 +198,16 @@ class PIDPositionController(Sofa.Core.Controller):
                 
         # Base frame aligns naturally with Z-axis in SOFA
         return T[0:3, 3]
-        
+
     def compute_numerical_jacobian(self, q, delta_q=1e-4):
-        num_joints = 4
-        num_task_dims = 3
+        """
+        Compute the Jacobian matrix using finite differences.
+        J = \Delta x/ \Delta q = [(x(q + \Delta q_i/2)^T - x(q - \Delta q_i/2))^T/(\Delta q_i)]
+        """
+        # Using the jacobian approximation formula from paper: 
+        # Mohsen Khadem, 2019, Autonomous Steering of Concentric Tube Robots for Enhanced Force/Velocity Manipulability
+        num_joints = 4  # number of degrees of freedom
+        num_task_dims = 3   # task space dimension
         J = np.zeros((num_task_dims, num_joints))
         
         for i in range(num_joints):
@@ -199,7 +225,11 @@ class PIDPositionController(Sofa.Core.Controller):
         return J
 
     def compute_snapping_avoidance_gradient(self, q, delta_q=1e-4):
-        num_joints = 4
+        """
+        compute the secondary task by maximizin the manipolability ellipsoid for soft robots. Consider 
+        a sphere desired shape for the manipulation ellipsoid.
+        """
+        num_joints = 4  # number of degrees of freedom
         grad_C = np.zeros(num_joints)
         
         # Base J to calculate mu_d
@@ -236,12 +266,13 @@ class PIDPositionController(Sofa.Core.Controller):
             
         return grad_C
 
+
     def onAnimateBeginEvent(self, event):
         if not self.active:
             return
 
         try:
-            # 1. Get current tip position
+            # Get current tip position
             tip_pose = self.rootNode.CTR.DOFs.position.value[-1]
             tip_position = np.array(tip_pose[0:3])
             
@@ -250,7 +281,7 @@ class PIDPositionController(Sofa.Core.Controller):
             self.sim_time_accumulator += dt
             self.frame_counter += 1
             
-            # 2. Update Numerical Jacobian via Finite Differences
+            # Update Numerical Jacobian via Finite Differences
             xtip = self.ir_controller.xtip.value
             rotation = self.ir_controller.rotationInstrument.value
             z_inner = xtip[1]
@@ -261,11 +292,10 @@ class PIDPositionController(Sofa.Core.Controller):
             q_current = np.array([z_inner, z_outer, rot_inner, rot_outer])
             self.J = self.compute_numerical_jacobian(q_current)
 
-            # 3. Primary Tracking Task (PID Control)
+            # Primary Tracking Task (PID Control)
             error = self.target - tip_position
             
-            # --- Anti-Windup ---
-            # Prevent the integral term from growing unbounded
+            # Anti-Windup
             max_integral = 10.0
             self.integral = np.clip(self.integral + error * dt, -max_integral, max_integral)
             
@@ -276,7 +306,7 @@ class PIDPositionController(Sofa.Core.Controller):
             # Convert Cartesian velocity (mm/s) to step displacement (mm/step)
             v_cartesian = v_cartesian * dt
             
-            # --- Cap Cartesian Velocity ---
+            # Cap Cartesian Velocity 
             # Max Cartesian displacement per step
             max_v_per_sec = 20.0 
             max_v_step = max_v_per_sec * dt 
@@ -284,7 +314,7 @@ class PIDPositionController(Sofa.Core.Controller):
             if v_norm > max_v_step:
                 v_cartesian = v_cartesian / v_norm * max_v_step
             
-            # --- Force Safety Check ---
+            # Force Safety Check
             try:
                 solver = self.rootNode.getObject("solver")
                 forces_vector = solver.constraintForces.value
@@ -292,7 +322,7 @@ class PIDPositionController(Sofa.Core.Controller):
             except:
                 force_value = 0.0
             
-            # 4. Exact Algebraic Inverse Kinematics (Null-Space Projection)
+            # Exact Algebraic Inverse Kinematics (Null-Space Projection)
             det = np.linalg.det(self.J @ self.J.T)
             w = np.sqrt(max(0.0, det))
             if w >= self.w_threshold:
@@ -308,12 +338,13 @@ class PIDPositionController(Sofa.Core.Controller):
             # Manipulability Redundancy Vector (Secondary Task)
             
             # --- COMBINED SECONDARY TASK ---
-            # 1. Translation: Telescopic Coordination (Gap Controller)
-            # We enforce a mathematical spring to keep the outer tube roughly 20mm behind the inner tube.
+            # 1. Translation: Follow-The-Leader (FTL) Coordination
+            # We enforce a mathematical spring to keep the gap at a specific distance (e.g., 15mm).
+            # This allows the outer tube to follow closely, but leaves the inner tube exposed near the target.
             gap = q_current[0] - q_current[1]  # z_inner - z_outer
-            push_val = np.clip((gap - 20.0) * 0.5, -1.0, 1.0)
+            push_val = np.clip((gap - 15.0) * 1.0, -2.0, 2.0)
             
-            # 2. Rotation: S-Divergence Snapping Avoidance
+            # 2. Rotation: Snapping Avoidance
             grad_C = self.compute_snapping_avoidance_gradient(q_current)
             
             # Combine: positive push_val for gap, NEGATIVE grad_C for minimizing snapping
@@ -374,6 +405,18 @@ class PIDPositionController(Sofa.Core.Controller):
             self.history_q_z_outer.append(step_z_outer)
             self.history_q_rot_inner.append(np.degrees(step_rot_inner))
             self.history_q_rot_outer.append(np.degrees(step_rot_outer))
+            self.history_force.append(force_value)
+            
+            # Use true outer tube tip from SOFA Visuals
+            try:
+                quads_out = self.rootNode.CTR.visu_1.Quads.position.value
+                outer_tip = np.mean(np.array(quads_out)[-10:], axis=0)
+            except:
+                outer_tip = tip_position # Fallback
+            
+            self.history_x_outer.append(outer_tip[0])
+            self.history_y_outer.append(outer_tip[1])
+            self.history_z_outer.append(outer_tip[2])
             
             if self.frame_counter % self.plot_update_frequency == 0:
                 self.update_live_plot()
@@ -387,86 +430,18 @@ class PIDPositionController(Sofa.Core.Controller):
 
             # 9. Convergence check
             if err_norm < 0.2:
-                Sofa.Helper.msg_info(self, "3D TARGET REACHED WITH DLS PID")
-                self.active = False
-                self.update_live_plot()
-                self.finalize_plot()
+                if not self.target_reached:
+                    Sofa.Helper.msg_info(self, "3D TARGET REACHED WITH DLS PID")
+                    print("\n" + "="*50)
+                    print("🎯 TARGET REACHED SUCESSFULLY!")
+                    print(f"Final Error: {err_norm:.3f} mm")
+                    print("="*50 + "\n")
+                    self.target_reached = True
+                
+                # Note: self.active is intentionally NOT set to False, 
+                # so the controller keeps regulating the target and logging data!
                 
         except Exception as e:
             print(f"[PID Controller Error] {e}")
             self.active = False
 
-    # =========================================================================
-    # REAL-TIME PLOTTING METHODS
-    # =========================================================================
-
-    def setup_live_plot(self):
-        """Initializes the matplotlib interactive mode and layout."""
-        plt.ion()  # Turn on interactive mode
-        self.fig, (self.ax1, self.ax2) = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
-        self.fig.suptitle("PID Controller LIVE Dashboard", fontsize=14, fontweight='bold')
-        
-        # Initialize empty lines for Subplot 1 (X, Y, Z Positions)
-        self.line_x, = self.ax1.plot([], [], color='red', linewidth=2.0, label="Tip X")
-        self.line_y, = self.ax1.plot([], [], color='green', linewidth=2.0, label="Tip Y")
-        self.line_z, = self.ax1.plot([], [], color='blue', linewidth=2.0, label="Tip Z")
-        
-        # Target lines
-        self.ax1.axhline(y=self.target[0], color='red', linestyle='--', alpha=0.5, label="Target X")
-        self.ax1.axhline(y=self.target[1], color='green', linestyle='--', alpha=0.5, label="Target Y")
-        self.ax1.axhline(y=self.target[2], color='blue', linestyle='--', alpha=0.5, label="Target Z")
-        
-        self.ax1.set_ylabel("Position (mm)", fontsize=10)
-        self.ax1.grid(True, linestyle=':', alpha=0.6)
-        # Place legend neatly inside
-        self.ax1.legend(loc="upper right", bbox_to_anchor=(1.15, 1))
-        
-        # Initialize empty lines for Subplot 2
-        self.line_uz_in, = self.ax2.plot([], [], color='teal', linewidth=1.5, label="Z Inner (mm)")
-        self.line_uz_out, = self.ax2.plot([], [], color='cyan', linewidth=1.5, label="Z Outer (mm)")
-        self.line_rot_in, = self.ax2.plot([], [], color='darkorange', linewidth=1.5, label="Rot Inner (deg)")
-        self.line_rot_out, = self.ax2.plot([], [], color='purple', linewidth=1.5, label="Rot Outer (deg)")
-        self.ax2.set_ylabel("Absolute Joint Positions", fontsize=10)
-        self.ax2.set_xlabel("Simulation Timeline (seconds)", fontsize=11)
-        self.ax2.grid(True, linestyle=':', alpha=0.6)
-        self.ax2.legend(loc="lower right", ncol=2)
-
-        plt.tight_layout()
-        self.fig.show()
-        self.fig.canvas.flush_events()
-
-    def update_live_plot(self):
-        """Injects new data into the existing plot lines without blocking SOFA."""
-        if self.fig is None or not plt.fignum_exists(self.fig.number):
-            return
-
-        # Update data dynamically
-        self.line_x.set_data(self.history_time, self.history_x)
-        self.line_y.set_data(self.history_time, self.history_y)
-        self.line_z.set_data(self.history_time, self.history_z)
-        
-        self.line_uz_in.set_data(self.history_time, self.history_q_z_inner)
-        self.line_uz_out.set_data(self.history_time, self.history_q_z_outer)
-        self.line_rot_in.set_data(self.history_time, self.history_q_rot_inner)
-        self.line_rot_out.set_data(self.history_time, self.history_q_rot_outer)
-
-        # Rescale axes continuously to fit the new data
-        for ax in [self.ax1, self.ax2]:
-            ax.relim()
-            ax.autoscale_view()
-
-        # Flush the GUI event queue to render the frame
-        self.fig.canvas.draw()
-        self.fig.canvas.flush_events()
-
-    def finalize_plot(self):
-        """Saves the final plot instead of blocking the SOFA thread."""
-        if self.fig is not None and plt.fignum_exists(self.fig.number):
-            try:
-                images_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'images')
-                os.makedirs(images_dir, exist_ok=True)
-                save_path = os.path.join(images_dir, 'PID_Final_Plot.png')
-                self.fig.savefig(save_path)
-                print(f"\033[92m[PID] Final plot saved in {save_path}\033[0m")
-            except Exception as e:
-                print(f"\033[91m[PID] Failed to save plot: {e}\033[0m")
