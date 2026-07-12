@@ -35,11 +35,11 @@ The following controllers are available:
 ## Videos
 
 ### MPC Controller (with Dual-Mode & Force Constraints)
-<video src="https://github.com/vincip99/CTR-Control-SOFA/raw/tree/master/SOFA_captures/mpc_ctr.mp4" width="800" controls></video>
+<video src="https://github.com/vincip99/CTR-Control-SOFA/blob/master/SOFA_captures/mpc_ctr.mp4" width="800" controls></video>
 
 
 ### PID Controller (with Follow-The-Leader & Null-Space Projection)
-<video src="https://github.com/vincip99/CTR-Control-SOFA/raw/tree/master/SOFA_captures/pid_ctr.mp4" width="800" controls></video>
+<video src="https://github.com/vincip99/CTR-Control-SOFA/blob/master/SOFA_captures/pid_ctr.mp4" width="800" controls></video>
 
 ## Project Structure
 
