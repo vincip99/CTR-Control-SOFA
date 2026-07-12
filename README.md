@@ -35,10 +35,12 @@ The following controllers are available:
 ## Videos
 
 ### MPC Controller (with Dual-Mode & Force Constraints)
-<video src="SOFA%20captures/mpc_ctr.mp4" width="800" controls></video>
+<video src="https://github.com/vincip99/CTR-Control-SOFA/raw/tree/master/SOFA_captures/mpc_ctr.mp4" width="800" controls></video>
+
 
 ### PID Controller (with Follow-The-Leader & Null-Space Projection)
-<video src="SOFA%20captures/pid_ctr.mp4" width="800" controls></video>
+<video src="https://github.com/vincip99/CTR-Control-SOFA/raw/tree/master/SOFA_captures/pid_ctr.mp4" width="800" controls></video>
+
 ## Project Structure
 
 - **`2instruments.py`**: The main simulation script. It constructs the SOFA scene, configures the two concentric tubes (Catheter and Guide), sets up collision models, and initializes the selected controller. It also handles loading the interactive FEM liver or gracefully falling back to a static `liver0.vtu` mesh for collision testing.
